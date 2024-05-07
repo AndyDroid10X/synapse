@@ -590,9 +590,11 @@ class SearchStore(SearchBackgroundUpdateStore):
             clauses = [clause]
 
         local_clauses = []
+        search_words = re.findall(r'\w+', search_term.lower())  # Split search term into words
         for key in keys:
-            local_clauses.append("key = ?")
-            args.append(key)
+            for word in search_words:
+                local_clauses.append("LOWER(%s) LIKE ?" % key)
+                args.append('%' + word + '%')
 
         clauses.append("(%s)" % (" OR ".join(local_clauses),))
 
@@ -619,29 +621,20 @@ class SearchStore(SearchBackgroundUpdateStore):
             args.extend([origin_server_ts, origin_server_ts, stream])
 
         if isinstance(self.database_engine, PostgresEngine):
-            search_query = search_term
             sql = """
             SELECT ts_rank_cd(vector, websearch_to_tsquery('english', ?)) as rank,
             room_id, event_id, origin_server_ts, stream_ordering
             FROM event_search
             WHERE vector @@ websearch_to_tsquery('english', ?) AND
             """
-            args = [search_query, search_query] + args
+            args = [search_term, search_term] + args
 
             count_sql = """
             SELECT room_id, count(*) as count FROM event_search
             WHERE vector @@ websearch_to_tsquery('english', ?) AND
             """
-            count_args = [search_query] + count_args
+            count_args = [search_term] + count_args
         elif isinstance(self.database_engine, Sqlite3Engine):
-            # We use CROSS JOIN here to ensure we use the right indexes.
-            # https://sqlite.org/optoverview.html#crossjoin
-            #
-            # We want to use the full text search index on event_search to
-            # extract all possible matches first, then lookup those matches
-            # in the events table to get the topological ordering. We need
-            # to use the indexes in this order because sqlite refuses to
-            # MATCH unless it uses the full text search index
             sql = """
             SELECT
                 rank(matchinfo) as rank, room_id, event_id, origin_server_ts, stream_ordering
@@ -702,7 +695,7 @@ class SearchStore(SearchBackgroundUpdateStore):
 
         highlights: Collection[str] = []
         if isinstance(self.database_engine, PostgresEngine):
-            highlights = await self._find_highlights_in_postgres(search_query, events)
+            highlights = await self._find_highlights_in_postgres(search_term, events)
         else:
             highlights = sqlite_highlights
 
